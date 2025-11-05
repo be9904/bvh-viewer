@@ -128,14 +128,15 @@ class Joint {
   ) {
     this.name = name; // name of joint (string)
     this.offset = offset; // offset from parent joint (x, y, z)
-    this.channels = channels;
-    this.channel_order = [];
-    this.parent = parent;
+    this.channels = channels; // save channel as list
+    this.channel_order = []; // for euler order
+    this.rotation = new THREE.Vector3(0, 0, 0); // rotation parsed from parser
+    this.quaternion = new THREE.Quaternion(); // actual rotation to use
+    
+    this.parent = parent; // parent joint
     this.length = 0; // length of joint (float)
-    this.rotation = new THREE.Vector3(0, 0, 0);
-    this.quaternion = new THREE.Quaternion();
     this.children = []; // child joints (Joint)
-    this.position = offset.clone();
+    this.position = offset.clone(); // used by root
   }
 
   updateLength() {
@@ -485,10 +486,6 @@ class Animator {
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
 
-// ------------------------
-// Initialization
-// ------------------------
-
 // global properties
 const bvhText_default = document.getElementById("bvh-data").textContent; // place holder for bvh file
 let animator = null;
@@ -532,6 +529,10 @@ function gui() {
     reader.readAsText(file);
   });
 }
+
+// ------------------------
+// Initialization
+// ------------------------
 
 function init() {
   // dispose any previous testViews
