@@ -113,9 +113,7 @@ function createButton(label, onClick) {
 const rad = THREE.MathUtils.degToRad;
 
 // fetch raw github data
-async function getBVHData(filename) {
-  const url = `https://raw.githubusercontent.com/whcjs13/Anim2025/main/${filename}`;
-
+async function getBVHData(url) {
   const res = await fetch(url);
   let text = await res.text();
 
@@ -499,55 +497,55 @@ class Animator {
   }
 }
 
-function addGroundRoot(root, motionData) {
-  // root is hip joint
-  // create ground root segment
-  let rootJoint = new Joint("Root");
-
-  // parent and child with hip joint
-  root.parent = rootJoint;
-  rootJoint.addChild(root);
-
-  function updateGroundRoot(root, hip, frames, frame) {
-    // compute root projection every frame
-    // rootJoint.position = new THREE
-    root.position = new THREE.Vector3(frames[frame][0], 0, frames[frame][2]);
-
-    // compute hip offset every frame
-    hip.offset = new THREE.Vector3(0, frames[frame][1], 0);
-
-    // apply animation from hip down afterwards
-  }
-
-  updateGroundRoot(rootJoint, root, motionData[2], frame);
-
-  return updateGroundRoot;
-}
-
 function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
   // unpack motion data
   let [fc1, ft1, f1] = motionDataA;
   let [fc2, ft2, f2] = motionDataB;
 
-  const BLEND_FRAMES = 30; // Number of frames to interpolate
+  // match blend speed to time
+  const MIX_DURATION = ft1 * 10; // mix for ft1 * 10 seconds
+  // calculate how many frames correspond to MIX_DURATION
+  const BLEND_FRAMES = Math.ceil(MIX_DURATION / ft1); 
 
-  // flatten the skeleton to find which channels are rotations vs positions
-  function getChannelTypes(joint) {
-    let types = [];
+  // map of how to interpolate each channel
+  let blendMap = []; // instructions: { type: 'lerp', idx: 0 } or { type: 'slerp', indices: [0,1,2], order: 'XYZ' }
+  let globalChannelIndex = 0;
+
+  function createBlendMap(joint) {
+    let rotIndices = {}; // stores { 'X': index, 'Y': index, 'Z': index }
+    let hasRot = false;
+
+    // scan this joint's channels
     joint.channels.forEach((ch) => {
-      if (ch.toLowerCase().includes("position")) types.push("P");
-      else types.push("R");
+      if (ch.toLowerCase().includes("position")) {
+        // lerp for positions
+        blendMap.push({ type: "lerp", idx: globalChannelIndex });
+        globalChannelIndex++;
+      } else if (ch.toLowerCase().includes("rotation")) {
+        hasRot = true;
+        const axis = ch.charAt(0).toUpperCase(); // 'X', 'Y', or 'Z'
+        rotIndices[axis] = globalChannelIndex;
+        globalChannelIndex++;
+      }
     });
-    joint.children.forEach((child) => {
-      types = types.concat(getChannelTypes(child));
-    });
-    return types;
-  }
-  const channelTypes = getChannelTypes(rootA);
 
-  // ---------------------------------------------------------
-  // 1. Identify Channel Indices for Root
-  // ---------------------------------------------------------
+    // if this joint has rotations, group them for slerp
+    if (hasRot) {
+      blendMap.push({
+        type: "slerp",
+        indices: [rotIndices["X"], rotIndices["Y"], rotIndices["Z"]],
+        order: joint.channel_order.join(""), // e.g., "ZXY"
+      });
+    }
+
+    // recursively map children
+    joint.children.forEach(createBlendMap);
+  }
+
+  // generate the map based on the first skeleton
+  createBlendMap(rootA);
+
+  // identify root channels
   let xPosIdx = -1, yPosIdx = -1, zPosIdx = -1;
   let xRotIdx = -1, yRotIdx = -1, zRotIdx = -1;
 
@@ -560,16 +558,17 @@ function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
     if (channel === "Zrotation") zRotIdx = index;
   });
 
+  // calculate alignment
   // end of clip A
   const lastFrameA = f1[f1.length - 1];
-
   const posA_End = new THREE.Vector3(
     lastFrameA[xPosIdx],
     lastFrameA[yPosIdx],
     lastFrameA[zPosIdx]
   );
 
-  const rotA_End = new THREE.Quaternion().setFromEuler(
+  // extract yaw A
+  const rotA_Full = new THREE.Quaternion().setFromEuler(
     new THREE.Euler(
       rad(lastFrameA[xRotIdx]),
       rad(lastFrameA[yRotIdx]),
@@ -577,17 +576,21 @@ function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
       rootA.channel_order.join("")
     )
   );
+  const eulerA = new THREE.Euler().setFromQuaternion(rotA_Full, "YXZ");
+  const rotA_Yaw = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(0, eulerA.y, 0, "YXZ")
+  );
 
   // start of clip B
   const firstFrameB = f2[0];
-
   const posB_Start = new THREE.Vector3(
     firstFrameB[xPosIdx],
     firstFrameB[yPosIdx],
     firstFrameB[zPosIdx]
   );
 
-  const rotB_Start = new THREE.Quaternion().setFromEuler(
+  // extract yaw B
+  const rotB_Full = new THREE.Quaternion().setFromEuler(
     new THREE.Euler(
       rad(firstFrameB[xRotIdx]),
       rad(firstFrameB[yRotIdx]),
@@ -595,15 +598,19 @@ function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
       rootB.channel_order.join("")
     )
   );
+  const eulerB = new THREE.Euler().setFromQuaternion(rotB_Full, "YXZ");
+  const rotB_Yaw = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(0, eulerB.y, 0, "YXZ")
+  );
 
-  // deltaQuat = q_A * q_B^-1
-  const deltaQuat = rotA_End.clone().multiply(rotB_Start.clone().invert());
+  // calculate delta
+  const deltaQuat = rotA_Yaw.clone().multiply(rotB_Yaw.clone().invert());
 
   // align clip B frames
   let f2_aligned = JSON.parse(JSON.stringify(f2));
 
   f2_aligned.forEach((frame) => {
-    // position
+    // align position
     let currentPos = new THREE.Vector3(
       frame[xPosIdx],
       frame[yPosIdx],
@@ -612,13 +619,11 @@ function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
     let offset = new THREE.Vector3().subVectors(currentPos, posB_Start);
     offset.applyQuaternion(deltaQuat);
 
-    // translate only x and z position, assuming ground contact is smooth in each clip
     frame[xPosIdx] = posA_End.x + offset.x;
     frame[zPosIdx] = posA_End.z + offset.z;
-    // frame[yPosIdx] = posA_End.y + offset.y;
-    frame[yPosIdx] = currentPos.y; // original absolute Y assuming flat floor
+    frame[yPosIdx] = currentPos.y; // keep original floor height
 
-    // rotation
+    // align rotation
     let currentRot = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(
         rad(frame[xRotIdx]),
@@ -638,37 +643,73 @@ function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
     frame[zRotIdx] = THREE.MathUtils.radToDeg(newEuler.z);
   });
 
-  // lerp
+  // generate blend frames with slerp
   let blendFrames = [];
   const startFrame = lastFrameA;
   const endFrame = f2_aligned[0];
+  const totalChannels = startFrame.length;
 
   for (let i = 1; i <= BLEND_FRAMES; i++) {
     const t = i / (BLEND_FRAMES + 1); // 0 < t < 1
-    let frame = [];
+    
+    // create an empty frame array
+    let newFrame = new Array(totalChannels).fill(0);
 
-    for (let j = 0; j < startFrame.length; j++) {
-      const valA = startFrame[j];
-      const valB = endFrame[j];
+    // use blendMap to determine how to mix each part of the body
+    blendMap.forEach((instruction) => {
+      
+      if (instruction.type === "lerp") {
+        // lerp positions
+        const idx = instruction.idx;
+        const valA = startFrame[idx];
+        const valB = endFrame[idx];
+        newFrame[idx] = valA + (valB - valA) * t;
 
-      if (channelTypes[j] === "R") {
-        // Rotation: Handle 360 wrap-around (Shortest Path)
-        let diff = valB - valA;
-        if (diff > 180) diff -= 360;
-        if (diff < -180) diff += 360;
-        frame.push(valA + diff * t);
-      } else {
-        // Position: Linear Interpolation
-        frame.push(valA + (valB - valA) * t);
+      } else if (instruction.type === "slerp") {
+        // slerp rotations
+        const [idxX, idxY, idxZ] = instruction.indices;
+        const order = instruction.order;
+
+        // get quaternion A
+        const qA = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(
+            rad(startFrame[idxX]),
+            rad(startFrame[idxY]),
+            rad(startFrame[idxZ]),
+            order
+          )
+        );
+
+        // get quaternion B
+        const qB = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(
+            rad(endFrame[idxX]),
+            rad(endFrame[idxY]),
+            rad(endFrame[idxZ]),
+            order
+          )
+        );
+
+        // slerp
+        qA.slerp(qB, t);
+
+        // convert back to degrees
+        const resultEuler = new THREE.Euler().setFromQuaternion(qA, order);
+        newFrame[idxX] = THREE.MathUtils.radToDeg(resultEuler.x);
+        newFrame[idxY] = THREE.MathUtils.radToDeg(resultEuler.y);
+        newFrame[idxZ] = THREE.MathUtils.radToDeg(resultEuler.z);
       }
-    }
-    blendFrames.push(frame);
+    });
+
+    blendFrames.push(newFrame);
   }
 
-  // stitch results
+  // Stitch results
   let stitched = f1.concat(blendFrames).concat(f2_aligned);
   let total_frames = stitched.length;
   let frame_time = ft1 === ft2 ? ft1 : -1;
+
+  console.log(`Stitched: Generated ${blendFrames.length} blend frames for ${MIX_DURATION}s duration.`);
 
   return [total_frames, frame_time, stitched];
 }
@@ -714,6 +755,7 @@ const bvhFileList = [
   "a_006_2_1.bvh",
   "a_006_2_2.bvh",
 ];
+const bvhSource = 'https://raw.githubusercontent.com/whcjs13/Anim2025/main/'
 let bvhFile_1 = bvhFileList[3];
 let bvhFile_2 = bvhFileList[21];
 let bvhText_1 = null;
@@ -848,8 +890,10 @@ async function init() {
   };
 
   // bvh files
-  bvhText_1 = await getBVHData(bvhFile_1);
-  bvhText_2 = await getBVHData(bvhFile_2);
+  bvhText_1 = await getBVHData(bvhSource + bvhFile_1);
+  bvhText_2 = await getBVHData(bvhSource + bvhFile_2);
+  // bvhText_1 = await getBVHData("https://raw.githubusercontent.com/CreativeInquiry/BVH-Examples/refs/heads/master/example-openFrameworks-0.98/example-bvh/bin/data/A_test.bvh");
+  // bvhText_2 = await getBVHData("https://raw.githubusercontent.com/CreativeInquiry/BVH-Examples/refs/heads/master/example-openFrameworks-0.98/example-bvh/bin/data/B_test.bvh");
   const [root, m1] = parseBVH(bvhText_1);
   const [r2, m2] = parseBVH(bvhText_2);
 
