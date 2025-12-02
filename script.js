@@ -499,6 +499,30 @@ class Animator {
   }
 }
 
+function addGroundRoot(root, motionData){ // root is hip joint
+  // create ground root segment
+  let rootJoint = new Joint("Root");
+  
+  // parent and child with hip joint
+  root.parent = rootJoint;
+  rootJoint.addChild(root);
+
+  function updateGroundRoot(root, hip, frames, frame){
+    // compute root projection every frame
+    // rootJoint.position = new THREE
+    root.position = new THREE.Vector3(frames[frame][0], 0, frames[frame][2]);
+  
+    // compute hip offset every frame
+    hip.offset = new THREE.Vector3(0, frames[frame][1], 0);
+  
+    // apply animation from hip down afterwards
+  }
+
+  updateGroundRoot(rootJoint, root, motionData[2], frame)
+
+  return updateGroundRoot
+}
+
 function stitch_motion(root_1, motionData_1, root_2, motionData_2){
   // unpack motion data
   let [fc1, ft1, f1] = motionData_1;
@@ -526,66 +550,61 @@ function stitch_motion(root_1, motionData_1, root_2, motionData_2){
     if (channel === "Zrotation") zRotIdx = index;
   });
 
-  ////////////////////////////////////////////////////////////////////////
-  
-  // y rotation delta
-  const rot_1_end = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(
-      f1[f1.length - 1][xRotIdx],
-      f1[f1.length - 1][yRotIdx],
-      f1[f1.length - 1][zRotIdx]
-    )
-  );
-  const rot_2_start = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(
-      f2[0][xRotIdx],
-      f2[0][yRotIdx],
-      f2[0][zRotIdx]
-    )
-  );
-  const deltaRot = rot_1_end.clone().multiply(rot_2_start.clone().invert());
-
-  f2.forEach(frame => {
-    const q = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(frame[xRotIdx], frame[yRotIdx], frame[zRotIdx])
-    );
-    
-    q.premultiply(deltaRot); // apply delta rotation
-    const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ'); // back to Euler
-
-    frame[xRotIdx] = euler.x;
-    frame[yRotIdx] = euler.y;
-    frame[zRotIdx] = euler.z;
-  });
-
-  ////////////////////////////////////////////////////////////////////////
-  
   // align root segment position
-  const root1_end_pos = new THREE.Vector3(
-    f1[f1.length-1][0],
-    f1[f1.length-1][1],
-    f1[f1.length-1][2]
+  let displacement = []
+  let num_channels = f1[0].length
+  let root1_end_pos = new THREE.Vector3(
+    f1[f1.length-1][xPosIdx],
+    f1[f1.length-1][yPosIdx],
+    f1[f1.length-1][zPosIdx]
+  );
+  let rot1_end = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(
+      rad(f1[f1.length-1][xRotIdx]),
+      rad(f1[f1.length-1][yRotIdx]),
+      rad(f1[f1.length-1][zRotIdx])
+    )
   );
   let root2_start_pos = new THREE.Vector3(
-    f2[0][0],
-    f2[0][1],
-    f2[0][2]
+    f2[0][xPosIdx],
+    f2[0][yPosIdx],
+    f2[0][zPosIdx]
   );
-  const root_displacement = new THREE.Vector3(
+  let rot2_start = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(
+      rad(f2[0][xRotIdx]),
+      rad(f2[0][yRotIdx]),
+      rad(f2[0][zRotIdx])
+    )
+  );
+  let deltaPos = new THREE.Vector3(
     root1_end_pos.x - root2_start_pos.x,
     root1_end_pos.y - root2_start_pos.y,
     root1_end_pos.z - root2_start_pos.z
   );
+  let deltaRot = rot1_end.clone().multiply(rot2_start.clone().invert());
 
   f2.forEach(frame => {
-    frame[0] += root_displacement.x;
-    frame[1] += root_displacement.y;
-    frame[2] += root_displacement.z;
-  })
+    frame[xPosIdx] += deltaPos.x;
+    frame[yPosIdx] += deltaPos.y;
+    frame[zPosIdx] += deltaPos.z;
 
-  // align child joints
-  
-  // lerp `BLEND_FRAMES` frames
+    const q = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(
+        rad(frame[xRotIdx]),
+        rad(frame[yRotIdx]),
+        rad(frame[zRotIdx])
+      )
+    );
+
+    q.premultiply(deltaRot);
+
+    const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+
+    frame[xRotIdx] = euler.x;
+    frame[yRotIdx] = euler.y;
+    frame[zRotIdx] = euler.z;
+  })
 
   stitched = f1.concat(f2);
 
