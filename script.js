@@ -112,6 +112,16 @@ function createButton(label, onClick) {
 // convert to radians
 const rad = THREE.MathUtils.degToRad;
 
+// fetch raw github data
+async function getBVHData(filename){  
+  const url = `https://raw.githubusercontent.com/whcjs13/Anim2025/main/${filename}`;
+
+  const res = await fetch(url);
+  let text = await res.text();
+  
+  return text
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -413,6 +423,8 @@ class Animator {
     this.frameTimer = null;
     this.isPlaying = false;
 
+    this.splitFrame = -1;
+
     this.clearTimer();
 
     // create timeline
@@ -421,6 +433,11 @@ class Animator {
         this.frame = (this.frame + 1) % this.frame_count;
       }
     }, this.frame_time * 1000);
+  }
+  
+  setBVH(root, motionData){
+    this.root = root
+    this.motionData = motionData
   }
 
   update() {
@@ -482,6 +499,99 @@ class Animator {
   }
 }
 
+function stitch_motion(root_1, motionData_1, root_2, motionData_2){
+  // unpack motion data
+  let [fc1, ft1, f1] = motionData_1;
+  let [fc2, ft2, f2] = motionData_2;
+  
+  let frame_count = fc1 + fc2;
+  let frame_time = -1;
+  if(ft1 === ft2)
+    frame_time = ft1;
+  let stitched = [];
+
+  const BLEND_FRAMES = 20; // How many frames to blend/overlap
+  
+  // root channel indices
+  let xPosIdx = -1, yPosIdx = -1, zPosIdx = -1;
+  let xRotIdx = -1, yRotIdx = -1, zRotIdx = -1;
+  
+  // root channels are always at the start of the frame array (indices 0-5 usually)
+  root_1.channels.forEach((channel, index) => {
+    if (channel === "Xposition") xPosIdx = index;
+    if (channel === "Yposition") yPosIdx = index;
+    if (channel === "Zposition") zPosIdx = index;
+    if (channel === "Yrotation") yRotIdx = index;
+    if (channel === "Xrotation") xRotIdx = index;
+    if (channel === "Zrotation") zRotIdx = index;
+  });
+
+  ////////////////////////////////////////////////////////////////////////
+  
+  // y rotation delta
+  const rot_1_end = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(
+      f1[f1.length - 1][xRotIdx],
+      f1[f1.length - 1][yRotIdx],
+      f1[f1.length - 1][zRotIdx]
+    )
+  );
+  const rot_2_start = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(
+      f2[0][xRotIdx],
+      f2[0][yRotIdx],
+      f2[0][zRotIdx]
+    )
+  );
+  const deltaRot = rot_1_end.clone().multiply(rot_2_start.clone().invert());
+
+  f2.forEach(frame => {
+    const q = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(frame[xRotIdx], frame[yRotIdx], frame[zRotIdx])
+    );
+    
+    q.premultiply(deltaRot); // apply delta rotation
+    const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ'); // back to Euler
+
+    frame[xRotIdx] = euler.x;
+    frame[yRotIdx] = euler.y;
+    frame[zRotIdx] = euler.z;
+  });
+
+  ////////////////////////////////////////////////////////////////////////
+  
+  // align root segment position
+  const root1_end_pos = new THREE.Vector3(
+    f1[f1.length-1][0],
+    f1[f1.length-1][1],
+    f1[f1.length-1][2]
+  );
+  let root2_start_pos = new THREE.Vector3(
+    f2[0][0],
+    f2[0][1],
+    f2[0][2]
+  );
+  const root_displacement = new THREE.Vector3(
+    root1_end_pos.x - root2_start_pos.x,
+    root1_end_pos.y - root2_start_pos.y,
+    root1_end_pos.z - root2_start_pos.z
+  );
+
+  f2.forEach(frame => {
+    frame[0] += root_displacement.x;
+    frame[1] += root_displacement.y;
+    frame[2] += root_displacement.z;
+  })
+
+  // align child joints
+  
+  // lerp `BLEND_FRAMES` frames
+
+  stitched = f1.concat(f2);
+
+  return [frame_count, frame_time, stitched]
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -489,17 +599,50 @@ class Animator {
 // global properties
 const bvhText_default = document.getElementById("bvh-data").textContent; // place holder for bvh file
 let animator = null;
-let bvhText = null;
 let rootView;
 let frame = 0;
 let frameTimer = null;
 let isPlaying = false;
+const bvhFileList = [
+  'a_001_1_1.bvh',
+  'a_001_1_2.bvh',
+  'a_001_2_1.bvh',
+  'a_001_2_2.bvh',
+  'a_002_1_1.bvh',
+  'a_002_1_2.bvh',
+  'a_002_2_1.bvh',
+  'a_002_2_2.bvh',
+  'a_002_3_1.bvh',
+  'a_002_3_2.bvh',
+  'a_003_1_1.bvh',
+  'a_003_1_2.bvh',
+  'a_003_2_1.bvh',
+  'a_003_2_2.bvh',
+  'a_003_4_1.bvh',
+  'a_003_4_2.bvh',
+  'a_004_1_1.bvh',
+  'a_004_1_2.bvh',
+  'a_004_2_1.bvh',
+  'a_004_2_2.bvh',
+  'a_005_1_1.bvh',
+  'a_005_1_2.bvh',
+  'a_005_2_1.bvh',
+  'a_005_2_2.bvh',
+  'a_006_1_1.bvh',
+  'a_006_1_2.bvh',
+  'a_006_2_1.bvh',
+  'a_006_2_2.bvh'
+];
+let bvhFile_1 = bvhFileList[11];
+let bvhFile_2 = bvhFileList[9];
+let bvhText_1 = null;
+let bvhText_2 = null;
 
 // ------------------------
 // GUI Settings
 // ------------------------
 
-function gui() {
+async function gui() {
   // event listener for when window is resized
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -512,6 +655,90 @@ function gui() {
     animator.isPlaying = !animator.isPlaying;
     playButton.innerText = animator.isPlaying ? "Pause" : "Play";
   });
+
+  /////////////////////////////////////////////////////////////////////////
+
+  // create progress bar container
+  const progressContainer = document.createElement("div");
+  progressContainer.style.marginTop = "10px";
+  progressContainer.style.color = "white";
+  progressContainer.style.fontFamily = "monospace";
+  buttonContainer.appendChild(progressContainer);
+
+  // create a wrapper for the slider and the marker
+  const sliderWrapper = document.createElement("div");
+  sliderWrapper.style.position = "relative";
+  sliderWrapper.style.width = "300px";
+  sliderWrapper.style.height = "20px"; // Height of the slider area
+  sliderWrapper.style.display = "inline-block";
+  sliderWrapper.style.display = "flex";
+  sliderWrapper.style.alignItems = "center";
+  progressContainer.appendChild(sliderWrapper);
+
+  // create range slider
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = 0;
+  slider.max = animator.frame_count - 1; // set max to total frames
+  slider.value = 0;
+  slider.style.width = "100%"; // Ensure it fills the wrapper
+  slider.style.margin = "0";   // Remove default margins
+  slider.style.verticalAlign = "middle";
+  slider.id = "frame-slider"; // ID for access in animate loop
+  sliderWrapper.appendChild(slider);
+
+  // create the split marker
+  const marker = document.createElement("div");
+  marker.id = "split-marker";
+  marker.style.position = "absolute";
+  marker.style.top = "-5px"; // Stick out slightly above
+  marker.style.bottom = "-5px"; // Stick out slightly below
+  marker.style.width = "2px";
+  marker.style.backgroundColor = "#ff0000"; // Red color
+  marker.style.pointerEvents = "none"; // Let clicks pass through to slider
+  marker.style.display = "none"; // Hide initially
+  marker.style.zIndex = "10";
+  sliderWrapper.appendChild(marker);
+
+  // create frame counter label (e.g., "0 / 100")
+  const frameLabel = document.createElement("span");
+  frameLabel.innerText = ` 0 / ${animator.frame_count}`;
+  frameLabel.style.marginLeft = "10px";
+  frameLabel.id = "frame-label"; // ID for access in animate loop
+  progressContainer.appendChild(frameLabel);
+
+  // add interaction (scrubbing)
+  slider.addEventListener("input", (e) => {
+    // when user drags slider, update the animator's frame
+    const targetFrame = parseInt(e.target.value);
+    animator.frame = targetFrame;
+    
+    // update the skeleton immediately so it feels responsive
+    animator.update(); 
+    
+    // pause while scrubbing so it doesn't fight the timer
+    animator.isPlaying = false; 
+    playButton.innerText = "Play";
+  });
+
+  const animLabel = document.createElement("div");
+  animLabel.style.color = "white";
+  animLabel.style.fontFamily = "monospace";
+  animLabel.style.marginTop = "5px";
+  animLabel.style.marginBottom = "5px";
+  animLabel.style.fontSize = "16px";
+  animLabel.id = "anim-label";
+  animLabel.innerText = "Current Animation: None";
+  buttonContainer.appendChild(animLabel);
+
+  if (animator && animator.splitFrame) {
+    const percentage = (animator.splitFrame / animator.frame_count) * 100;
+    marker.style.left = `${percentage}%`;
+    marker.style.display = "block";
+    marker.title = `Split at frame ${animator.splitFrame}`;
+  }
+
+  /////////////////////////////////////////////////////////////////////////
 
   // upload bvh file button
   const uploadInput = document.getElementById("bvh-upload");
@@ -534,7 +761,7 @@ function gui() {
 // Initialization
 // ------------------------
 
-function init() {
+async function init() {
   // dispose any previous testViews
   if (rootView) {
     rootView.dispose();
@@ -545,20 +772,32 @@ function init() {
     joint: new THREE.MeshStandardMaterial({ color: 0x0077ff }),
     link: new THREE.MeshStandardMaterial({ color: 0x999999 }),
   };
+  
+  // bvh files
+  bvhText_1 = await getBVHData(bvhFile_1);
+  bvhText_2 = await getBVHData(bvhFile_2);
+  const [root, m1] = parseBVH(bvhText_1);
+  const [r2, m2] = parseBVH(bvhText_2);
+
+  // temporary animator
+  animator = new Animator(root, m1);
+  animator.update();
+  animator = new Animator(r2, m2);
+  animator.update();
 
   // parse bvh file
-  const [root, motionData] = parseBVH(
-    bvhText === null ? bvhText_default : bvhText
-  );
+  // const [root, motionData] = parseBVH(bvhText_1);
+  const motionData = stitch_motion(root, m1, r2, m2);
 
   // reset previous animator timers and create a new one
   if (animator) {
     animator.clearTimer();
   }
   animator = new Animator(root, motionData);
+  animator.splitFrame = m1[0]; // set split frame for gui
 
   // create view and apply material to joints
-  rootView = new JointView(root, material, frames);
+  rootView = new JointView(root, material, motionData[2]);
 
   // add joint view in scene
   scene.add(rootView.object3d);
@@ -583,10 +822,37 @@ function animate() {
   requestAnimationFrame(animate);
 
   animator.update();
-
   rootView.update();
   controls.update();
   renderer.render(scene, camera);
+  
+  // gui update
+  // sync slider with animation
+  if (animator) {
+    const slider = document.getElementById("frame-slider");
+    const label = document.getElementById("frame-label");
+    const animLabel = document.getElementById("anim-label");
+
+    // Only update slider value if the user isn't currently dragging it
+    // (We check activeElement to prevent UI fighting)
+    if (slider && document.activeElement !== slider) {
+      slider.value = animator.frame;
+    }
+
+    // Update text label
+    if (label) {
+      label.innerText = ` ${animator.frame} / ${animator.frame_count}`;
+    }
+
+    if(animLabel){
+      if (animator.frame < animator.splitFrame) {
+        animLabel.innerText = `Current Animation: ${bvhFile_1}`
+      }
+      else {
+        animLabel.innerText = `Current Animation: ${bvhFile_2}`
+      }
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -598,6 +864,8 @@ function animate() {
 // ------------------------
 
 console.log("bvhText_default loaded.");
-init();
-gui();
-animate();
+(async () => {
+  await init();  // wait for async BVH loading
+  await gui();
+  animate();
+})();
