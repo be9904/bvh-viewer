@@ -113,13 +113,13 @@ function createButton(label, onClick) {
 const rad = THREE.MathUtils.degToRad;
 
 // fetch raw github data
-async function getBVHData(filename){  
+async function getBVHData(filename) {
   const url = `https://raw.githubusercontent.com/whcjs13/Anim2025/main/${filename}`;
 
   const res = await fetch(url);
   let text = await res.text();
-  
-  return text
+
+  return text;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -142,7 +142,7 @@ class Joint {
     this.channel_order = []; // for euler order
     this.rotation = new THREE.Vector3(0, 0, 0); // rotation parsed from parser
     this.quaternion = new THREE.Quaternion(); // actual rotation to use
-    
+
     this.parent = parent; // parent joint
     this.length = 0; // length of joint (float)
     this.children = []; // child joints (Joint)
@@ -434,10 +434,10 @@ class Animator {
       }
     }, this.frame_time * 1000);
   }
-  
-  setBVH(root, motionData){
-    this.root = root
-    this.motionData = motionData
+
+  setBVH(root, motionData) {
+    this.root = root;
+    this.motionData = motionData;
   }
 
   update() {
@@ -499,49 +499,59 @@ class Animator {
   }
 }
 
-function addGroundRoot(root, motionData){ // root is hip joint
+function addGroundRoot(root, motionData) {
+  // root is hip joint
   // create ground root segment
   let rootJoint = new Joint("Root");
-  
+
   // parent and child with hip joint
   root.parent = rootJoint;
   rootJoint.addChild(root);
 
-  function updateGroundRoot(root, hip, frames, frame){
+  function updateGroundRoot(root, hip, frames, frame) {
     // compute root projection every frame
     // rootJoint.position = new THREE
     root.position = new THREE.Vector3(frames[frame][0], 0, frames[frame][2]);
-  
+
     // compute hip offset every frame
     hip.offset = new THREE.Vector3(0, frames[frame][1], 0);
-  
+
     // apply animation from hip down afterwards
   }
 
-  updateGroundRoot(rootJoint, root, motionData[2], frame)
+  updateGroundRoot(rootJoint, root, motionData[2], frame);
 
-  return updateGroundRoot
+  return updateGroundRoot;
 }
 
-function stitch_motion(root_1, motionData_1, root_2, motionData_2){
+function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
   // unpack motion data
-  let [fc1, ft1, f1] = motionData_1;
-  let [fc2, ft2, f2] = motionData_2;
-  
-  let frame_count = fc1 + fc2;
-  let frame_time = -1;
-  if(ft1 === ft2)
-    frame_time = ft1;
-  let stitched = [];
+  let [fc1, ft1, f1] = motionDataA;
+  let [fc2, ft2, f2] = motionDataB;
 
-  const BLEND_FRAMES = 20; // How many frames to blend/overlap
-  
-  // root channel indices
+  const BLEND_FRAMES = 30; // Number of frames to interpolate
+
+  // flatten the skeleton to find which channels are rotations vs positions
+  function getChannelTypes(joint) {
+    let types = [];
+    joint.channels.forEach((ch) => {
+      if (ch.toLowerCase().includes("position")) types.push("P");
+      else types.push("R");
+    });
+    joint.children.forEach((child) => {
+      types = types.concat(getChannelTypes(child));
+    });
+    return types;
+  }
+  const channelTypes = getChannelTypes(rootA);
+
+  // ---------------------------------------------------------
+  // 1. Identify Channel Indices for Root
+  // ---------------------------------------------------------
   let xPosIdx = -1, yPosIdx = -1, zPosIdx = -1;
   let xRotIdx = -1, yRotIdx = -1, zRotIdx = -1;
-  
-  // root channels are always at the start of the frame array (indices 0-5 usually)
-  root_1.channels.forEach((channel, index) => {
+
+  rootA.channels.forEach((channel, index) => {
     if (channel === "Xposition") xPosIdx = index;
     if (channel === "Yposition") yPosIdx = index;
     if (channel === "Zposition") zPosIdx = index;
@@ -550,65 +560,117 @@ function stitch_motion(root_1, motionData_1, root_2, motionData_2){
     if (channel === "Zrotation") zRotIdx = index;
   });
 
-  // align root segment position
-  let displacement = []
-  let num_channels = f1[0].length
-  let root1_end_pos = new THREE.Vector3(
-    f1[f1.length-1][xPosIdx],
-    f1[f1.length-1][yPosIdx],
-    f1[f1.length-1][zPosIdx]
+  // end of clip A
+  const lastFrameA = f1[f1.length - 1];
+
+  const posA_End = new THREE.Vector3(
+    lastFrameA[xPosIdx],
+    lastFrameA[yPosIdx],
+    lastFrameA[zPosIdx]
   );
-  let rot1_end = new THREE.Quaternion().setFromEuler(
+
+  const rotA_End = new THREE.Quaternion().setFromEuler(
     new THREE.Euler(
-      rad(f1[f1.length-1][xRotIdx]),
-      rad(f1[f1.length-1][yRotIdx]),
-      rad(f1[f1.length-1][zRotIdx])
+      rad(lastFrameA[xRotIdx]),
+      rad(lastFrameA[yRotIdx]),
+      rad(lastFrameA[zRotIdx]),
+      rootA.channel_order.join("")
     )
   );
-  let root2_start_pos = new THREE.Vector3(
-    f2[0][xPosIdx],
-    f2[0][yPosIdx],
-    f2[0][zPosIdx]
+
+  // start of clip B
+  const firstFrameB = f2[0];
+
+  const posB_Start = new THREE.Vector3(
+    firstFrameB[xPosIdx],
+    firstFrameB[yPosIdx],
+    firstFrameB[zPosIdx]
   );
-  let rot2_start = new THREE.Quaternion().setFromEuler(
+
+  const rotB_Start = new THREE.Quaternion().setFromEuler(
     new THREE.Euler(
-      rad(f2[0][xRotIdx]),
-      rad(f2[0][yRotIdx]),
-      rad(f2[0][zRotIdx])
+      rad(firstFrameB[xRotIdx]),
+      rad(firstFrameB[yRotIdx]),
+      rad(firstFrameB[zRotIdx]),
+      rootB.channel_order.join("")
     )
   );
-  let deltaPos = new THREE.Vector3(
-    root1_end_pos.x - root2_start_pos.x,
-    root1_end_pos.y - root2_start_pos.y,
-    root1_end_pos.z - root2_start_pos.z
-  );
-  let deltaRot = rot1_end.clone().multiply(rot2_start.clone().invert());
 
-  f2.forEach(frame => {
-    frame[xPosIdx] += deltaPos.x;
-    frame[yPosIdx] += deltaPos.y;
-    frame[zPosIdx] += deltaPos.z;
+  // deltaQuat = q_A * q_B^-1
+  const deltaQuat = rotA_End.clone().multiply(rotB_Start.clone().invert());
 
-    const q = new THREE.Quaternion().setFromEuler(
+  // align clip B frames
+  let f2_aligned = JSON.parse(JSON.stringify(f2));
+
+  f2_aligned.forEach((frame) => {
+    // position
+    let currentPos = new THREE.Vector3(
+      frame[xPosIdx],
+      frame[yPosIdx],
+      frame[zPosIdx]
+    );
+    let offset = new THREE.Vector3().subVectors(currentPos, posB_Start);
+    offset.applyQuaternion(deltaQuat);
+
+    // translate only x and z position, assuming ground contact is smooth in each clip
+    frame[xPosIdx] = posA_End.x + offset.x;
+    frame[zPosIdx] = posA_End.z + offset.z;
+    // frame[yPosIdx] = posA_End.y + offset.y;
+    frame[yPosIdx] = currentPos.y; // original absolute Y assuming flat floor
+
+    // rotation
+    let currentRot = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(
         rad(frame[xRotIdx]),
         rad(frame[yRotIdx]),
-        rad(frame[zRotIdx])
+        rad(frame[zRotIdx]),
+        rootB.channel_order.join("")
       )
     );
+    currentRot.premultiply(deltaQuat);
+    const newEuler = new THREE.Euler().setFromQuaternion(
+      currentRot,
+      rootB.channel_order.join("")
+    );
 
-    q.premultiply(deltaRot);
+    frame[xRotIdx] = THREE.MathUtils.radToDeg(newEuler.x);
+    frame[yRotIdx] = THREE.MathUtils.radToDeg(newEuler.y);
+    frame[zRotIdx] = THREE.MathUtils.radToDeg(newEuler.z);
+  });
 
-    const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+  // lerp
+  let blendFrames = [];
+  const startFrame = lastFrameA;
+  const endFrame = f2_aligned[0];
 
-    frame[xRotIdx] = euler.x;
-    frame[yRotIdx] = euler.y;
-    frame[zRotIdx] = euler.z;
-  })
+  for (let i = 1; i <= BLEND_FRAMES; i++) {
+    const t = i / (BLEND_FRAMES + 1); // 0 < t < 1
+    let frame = [];
 
-  stitched = f1.concat(f2);
+    for (let j = 0; j < startFrame.length; j++) {
+      const valA = startFrame[j];
+      const valB = endFrame[j];
 
-  return [frame_count, frame_time, stitched]
+      if (channelTypes[j] === "R") {
+        // Rotation: Handle 360 wrap-around (Shortest Path)
+        let diff = valB - valA;
+        if (diff > 180) diff -= 360;
+        if (diff < -180) diff += 360;
+        frame.push(valA + diff * t);
+      } else {
+        // Position: Linear Interpolation
+        frame.push(valA + (valB - valA) * t);
+      }
+    }
+    blendFrames.push(frame);
+  }
+
+  // stitch results
+  let stitched = f1.concat(blendFrames).concat(f2_aligned);
+  let total_frames = stitched.length;
+  let frame_time = ft1 === ft2 ? ft1 : -1;
+
+  return [total_frames, frame_time, stitched];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -623,37 +685,37 @@ let frame = 0;
 let frameTimer = null;
 let isPlaying = false;
 const bvhFileList = [
-  'a_001_1_1.bvh',
-  'a_001_1_2.bvh',
-  'a_001_2_1.bvh',
-  'a_001_2_2.bvh',
-  'a_002_1_1.bvh',
-  'a_002_1_2.bvh',
-  'a_002_2_1.bvh',
-  'a_002_2_2.bvh',
-  'a_002_3_1.bvh',
-  'a_002_3_2.bvh',
-  'a_003_1_1.bvh',
-  'a_003_1_2.bvh',
-  'a_003_2_1.bvh',
-  'a_003_2_2.bvh',
-  'a_003_4_1.bvh',
-  'a_003_4_2.bvh',
-  'a_004_1_1.bvh',
-  'a_004_1_2.bvh',
-  'a_004_2_1.bvh',
-  'a_004_2_2.bvh',
-  'a_005_1_1.bvh',
-  'a_005_1_2.bvh',
-  'a_005_2_1.bvh',
-  'a_005_2_2.bvh',
-  'a_006_1_1.bvh',
-  'a_006_1_2.bvh',
-  'a_006_2_1.bvh',
-  'a_006_2_2.bvh'
+  "a_001_1_1.bvh",
+  "a_001_1_2.bvh",
+  "a_001_2_1.bvh",
+  "a_001_2_2.bvh",
+  "a_002_1_1.bvh",
+  "a_002_1_2.bvh",
+  "a_002_2_1.bvh",
+  "a_002_2_2.bvh",
+  "a_002_3_1.bvh",
+  "a_002_3_2.bvh",
+  "a_003_1_1.bvh",
+  "a_003_1_2.bvh",
+  "a_003_2_1.bvh",
+  "a_003_2_2.bvh",
+  "a_003_4_1.bvh",
+  "a_003_4_2.bvh",
+  "a_004_1_1.bvh",
+  "a_004_1_2.bvh",
+  "a_004_2_1.bvh",
+  "a_004_2_2.bvh",
+  "a_005_1_1.bvh",
+  "a_005_1_2.bvh",
+  "a_005_2_1.bvh",
+  "a_005_2_2.bvh",
+  "a_006_1_1.bvh",
+  "a_006_1_2.bvh",
+  "a_006_2_1.bvh",
+  "a_006_2_2.bvh",
 ];
-let bvhFile_1 = bvhFileList[11];
-let bvhFile_2 = bvhFileList[9];
+let bvhFile_1 = bvhFileList[3];
+let bvhFile_2 = bvhFileList[21];
 let bvhText_1 = null;
 let bvhText_2 = null;
 
@@ -698,10 +760,10 @@ async function gui() {
   const slider = document.createElement("input");
   slider.type = "range";
   slider.min = 0;
-  slider.max = animator.frame_count - 1; // set max to total frames
+  // NOTE: Max will be set in Animate or Init because frame count changes dynamically
   slider.value = 0;
   slider.style.width = "100%"; // Ensure it fills the wrapper
-  slider.style.margin = "0";   // Remove default margins
+  slider.style.margin = "0"; // Remove default margins
   slider.style.verticalAlign = "middle";
   slider.id = "frame-slider"; // ID for access in animate loop
   sliderWrapper.appendChild(slider);
@@ -721,7 +783,7 @@ async function gui() {
 
   // create frame counter label (e.g., "0 / 100")
   const frameLabel = document.createElement("span");
-  frameLabel.innerText = ` 0 / ${animator.frame_count}`;
+  frameLabel.innerText = ` 0 / 0`;
   frameLabel.style.marginLeft = "10px";
   frameLabel.id = "frame-label"; // ID for access in animate loop
   progressContainer.appendChild(frameLabel);
@@ -731,12 +793,12 @@ async function gui() {
     // when user drags slider, update the animator's frame
     const targetFrame = parseInt(e.target.value);
     animator.frame = targetFrame;
-    
+
     // update the skeleton immediately so it feels responsive
-    animator.update(); 
-    
+    animator.update();
+
     // pause while scrubbing so it doesn't fight the timer
-    animator.isPlaying = false; 
+    animator.isPlaying = false;
     playButton.innerText = "Play";
   });
 
@@ -749,13 +811,6 @@ async function gui() {
   animLabel.id = "anim-label";
   animLabel.innerText = "Current Animation: None";
   buttonContainer.appendChild(animLabel);
-
-  if (animator && animator.splitFrame) {
-    const percentage = (animator.splitFrame / animator.frame_count) * 100;
-    marker.style.left = `${percentage}%`;
-    marker.style.display = "block";
-    marker.title = `Split at frame ${animator.splitFrame}`;
-  }
 
   /////////////////////////////////////////////////////////////////////////
 
@@ -791,21 +846,14 @@ async function init() {
     joint: new THREE.MeshStandardMaterial({ color: 0x0077ff }),
     link: new THREE.MeshStandardMaterial({ color: 0x999999 }),
   };
-  
+
   // bvh files
   bvhText_1 = await getBVHData(bvhFile_1);
   bvhText_2 = await getBVHData(bvhFile_2);
   const [root, m1] = parseBVH(bvhText_1);
   const [r2, m2] = parseBVH(bvhText_2);
 
-  // temporary animator
-  animator = new Animator(root, m1);
-  animator.update();
-  animator = new Animator(r2, m2);
-  animator.update();
-
-  // parse bvh file
-  // const [root, motionData] = parseBVH(bvhText_1);
+  // parse bvh file and stitch
   const motionData = stitch_motion(root, m1, r2, m2);
 
   // reset previous animator timers and create a new one
@@ -815,6 +863,20 @@ async function init() {
   animator = new Animator(root, motionData);
   animator.splitFrame = m1[0]; // set split frame for gui
 
+  // update slider max now that we know total stitched frames
+  const slider = document.getElementById("frame-slider");
+  if (slider) {
+    slider.max = animator.frame_count - 1;
+    // update marker position
+    const marker = document.getElementById("split-marker");
+    if (marker) {
+      const percentage = (animator.splitFrame / animator.frame_count) * 100;
+      marker.style.left = `${percentage}%`;
+      marker.style.display = "block";
+      marker.title = `Split at frame ${animator.splitFrame}`;
+    }
+  }
+
   // create view and apply material to joints
   rootView = new JointView(root, material, motionData[2]);
 
@@ -822,12 +884,9 @@ async function init() {
   scene.add(rootView.object3d);
 
   // joint controller and gui for user control
-  const gui = new lil.GUI();
-  const baseFolder = gui.addFolder("Size");
-  new JointController(rootView, baseFolder, () => {
-    rootView.updateSize();
-  });
-  baseFolder.open();
+  // Only add if not added before (simple check)
+  // Note: in this structure we re-create gui every time, ideally we should clear it
+  // But for this snippet, we assume one-time load or simple refresh.
 
   // initial update, set skeleton pose to frame 0
   rootView.update();
@@ -840,11 +899,11 @@ async function init() {
 function animate() {
   requestAnimationFrame(animate);
 
-  animator.update();
-  rootView.update();
+  if (animator) animator.update();
+  if (rootView) rootView.update();
   controls.update();
   renderer.render(scene, camera);
-  
+
   // gui update
   // sync slider with animation
   if (animator) {
@@ -853,7 +912,6 @@ function animate() {
     const animLabel = document.getElementById("anim-label");
 
     // Only update slider value if the user isn't currently dragging it
-    // (We check activeElement to prevent UI fighting)
     if (slider && document.activeElement !== slider) {
       slider.value = animator.frame;
     }
@@ -863,12 +921,11 @@ function animate() {
       label.innerText = ` ${animator.frame} / ${animator.frame_count}`;
     }
 
-    if(animLabel){
+    if (animLabel) {
       if (animator.frame < animator.splitFrame) {
-        animLabel.innerText = `Current Animation: ${bvhFile_1}`
-      }
-      else {
-        animLabel.innerText = `Current Animation: ${bvhFile_2}`
+        animLabel.innerText = `Current Animation: ${bvhFile_1}`;
+      } else {
+        animLabel.innerText = `Current Animation: ${bvhFile_2}`;
       }
     }
   }
@@ -884,7 +941,7 @@ function animate() {
 
 console.log("bvhText_default loaded.");
 (async () => {
-  await init();  // wait for async BVH loading
-  await gui();
+  await gui(); // Setup GUI first
+  await init(); // Then load BVH
   animate();
 })();
