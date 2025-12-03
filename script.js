@@ -503,7 +503,7 @@ function stitch_motion(rootA, motionDataA, rootB, motionDataB) {
   let [fc2, ft2, f2] = motionDataB;
 
   // match blend speed to time
-  const MIX_DURATION = ft1 * 10; // mix for ft1 * 10 seconds
+  const MIX_DURATION = 1; // mix for 1 second
   // calculate how many frames correspond to MIX_DURATION
   const BLEND_FRAMES = Math.ceil(MIX_DURATION / ft1); 
 
